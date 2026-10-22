@@ -139,3 +139,18 @@ DEFINE_bool(texture_point_snap, false,
             "centers. Fixes texture seams in titles that use virtual textures, "
             "e.g. idTech 5, but may cause rendering issues in other titles.",
             "GPU");
+
+DEFINE_bool(
+    param_gen_integer_guest_position, false,
+    "At draw resolution scales above 1x, floor the PsParamGen pixel position "
+    "to the integer guest pixel. Fixes the 8x8 mosaic in passes that do "
+    "integer pixel address math on it, such as the deferred passes of "
+    "4E4D07D1. Those passes then sample at guest resolution.",
+    "GPU");
+
+DEFINE_bool(
+    param_gen_host_subpixel_restore, false,
+    "Implies param_gen_integer_guest_position. Adds the host sub-pixel offset "
+    "back to normalized 2D texture fetches in shaders using PsParamGen, so "
+    "the floored passes keep the resolution-scaled detail.",
+    "GPU");

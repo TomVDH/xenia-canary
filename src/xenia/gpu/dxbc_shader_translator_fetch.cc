@@ -763,6 +763,16 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
   bool point_snap =
       cvars::texture_point_snap && instr.CanSnapToTexelCenter(use_computed_lod);
 
+  // Restores the host sub-pixel that the PsParamGen floor drops.
+  bool host_subpixel_restore =
+      cvars::param_gen_host_subpixel_restore &&
+      instr.opcode == FetchOpcode::kTextureFetch &&
+      !instr.attributes.unnormalized_coordinates &&
+      instr.dimension == xenos::FetchOpDimension::k2D && is_pixel_shader() &&
+      GetDxbcShaderModification().pixel.param_gen_enable &&
+      (GetCurrentDrawResolutionScaleX() > 1 ||
+       GetCurrentDrawResolutionScaleY() > 1);
+
   // Get offsets applied to the coordinates before sampling.
   // `offsets` is used for float4 literal construction,
   // FIXME(Triang3l): Offsets need to be applied at the LOD being fetched, not
@@ -917,6 +927,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
     // Stacked and 3D textures have different size packing - need to get whether
     // the texture is 3D unconditionally.
     size_needed_components |= 0b1000;
+  }
+  if (host_subpixel_restore) {
+    // The sub-pixel delta divides by the guest texture size.
+    size_needed_components |= 0b0011;
   }
   uint32_t size_and_is_3d_temp =
       size_needed_components ? PushSystemTemp() : UINT32_MAX;
@@ -1341,6 +1355,49 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
           a_.OpEndIf();
         }
       }
+    }
+    if (host_subpixel_restore) {
+      // The floored position samples the guest texel center.
+      // Shift the coordinate to the host texel of this pixel.
+      uint32_t host_subpixel_temp = PushSystemTemp();
+      // XY: floor(SV_Position.xy) mod draw scale.
+      in_position_used_ |= 0b0011;
+      a_.OpFToU(dxbc::Dest::R(host_subpixel_temp, 0b0011),
+                dxbc::Src::V1D(in_reg_ps_position_));
+      a_.OpUDiv(dxbc::Dest::Null(), dxbc::Dest::R(host_subpixel_temp, 0b0011),
+                dxbc::Src::R(host_subpixel_temp),
+                dxbc::Src::LU(GetCurrentDrawResolutionScaleX(),
+                              GetCurrentDrawResolutionScaleY(), 1, 1));
+      a_.OpUToF(dxbc::Dest::R(host_subpixel_temp, 0b0011),
+                dxbc::Src::R(host_subpixel_temp));
+      // XY: (sub-pixel - (scale - 1) / 2) / (guest size * scale).
+      a_.OpAdd(dxbc::Dest::R(host_subpixel_temp, 0b0011),
+               dxbc::Src::R(host_subpixel_temp),
+               dxbc::Src::LF(-(float(draw_resolution_scale_x_) - 1.0f) * 0.5f,
+                             -(float(draw_resolution_scale_y_) - 1.0f) * 0.5f,
+                             0.0f, 0.0f));
+      a_.OpDiv(dxbc::Dest::R(host_subpixel_temp, 0b0011),
+               dxbc::Src::R(host_subpixel_temp),
+               dxbc::Src::R(size_and_is_3d_temp));
+      a_.OpMul(
+          dxbc::Dest::R(host_subpixel_temp, 0b0011),
+          dxbc::Src::R(host_subpixel_temp),
+          dxbc::Src::LF(1.0f / float(draw_resolution_scale_x_),
+                        1.0f / float(draw_resolution_scale_y_), 0.0f, 0.0f));
+      // Only resolution-scaled textures hold host-resolution texels.
+      a_.OpAnd(dxbc::Dest::R(host_subpixel_temp, 0b0100),
+               LoadSystemConstant(
+                   SystemConstants::Index::kTexturesResolutionScaled,
+                   offsetof(SystemConstants, textures_resolution_scaled),
+                   dxbc::Src::kXXXX),
+               dxbc::Src::LU(uint32_t(1) << tfetch_index));
+      a_.OpIf(true, dxbc::Src::R(host_subpixel_temp, dxbc::Src::kZZZZ));
+      a_.OpAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b0011),
+               dxbc::Src::R(coord_and_sampler_temp),
+               dxbc::Src::R(host_subpixel_temp));
+      a_.OpEndIf();
+      // Release host_subpixel_temp.
+      PopSystemTemp();
     }
     switch (instr.dimension) {
       case xenos::FetchOpDimension::k1D: {

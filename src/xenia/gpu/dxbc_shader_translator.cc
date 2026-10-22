@@ -754,6 +754,13 @@ void DxbcShaderTranslator::StartPixelShader() {
           dxbc::Src::R(param_gen_temp),
           dxbc::Src::LF(1.0f / GetCurrentDrawResolutionScaleX(),
                         1.0f / GetCurrentDrawResolutionScaleY(), 1.0f, 1.0f));
+      if (cvars::param_gen_integer_guest_position ||
+          cvars::param_gen_host_subpixel_restore) {
+        // Integer pixel address math needs whole guest pixels.
+        // The fraction left by the revert scrambles it into a mosaic.
+        a_.OpRoundNI(dxbc::Dest::R(param_gen_temp, resolution_scaled_axes),
+                     dxbc::Src::R(param_gen_temp));
+      }
     }
     // Add the window offset back when it's carried in the EDRAM bases.
     // PsParamGen includes it.
